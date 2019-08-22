@@ -201,11 +201,11 @@ class MUNIT_Trainer(nn.Module):
         # total loss
         self.loss_gen_total = hyperparameters['gan_w'] * self.loss_gen_adv_xa + \
                               hyperparameters['gan_w'] * self.loss_gen_adv_xa + \
-                              hyperparameters['gan_w'] * self.loss_gen_adv_sxa + \
-                              hyperparameters['gan_w'] * self.loss_gen_adv_sxb + \
+                              hyperparameters['gan_wp'] * self.loss_gen_adv_sxa + \
+                              hyperparameters['gan_wp'] * self.loss_gen_adv_sxb + \
                               hyperparameters['recon_x_w'] * self.loss_gen_recon_x_a + \
                               hyperparameters['recon_c_w'] * self.loss_gen_recon_c_a + \
-                              hyperparameters['recon_c_w'] * self.loss_gen_recon_c_b + \ 
+                              hyperparameters['recon_c_w'] * self.loss_gen_recon_c_b + \
                               hyperparameters['recon_x_w'] * self.loss_gen_recon_x_b + \
                               hyperparameters['recon_s_w'] * self.loss_gen_recon_s_a + \
                               hyperparameters['recon_s_w'] * self.loss_gen_recon_s_b 
@@ -289,17 +289,19 @@ class MUNIT_Trainer(nn.Module):
 
         # prepare data for the paired discriminator
         # real fake data -> 0
-        if(check = dis_sxa.pool() == 0):
+        if(len(self.dis_sa.pool_) == 0):
+            print(len(self.dis_sa.pool_))
             pair_a_rfake = torch.cat((x_b, x_a), 1)
         else:
-            pair_a_rfake = torch.cat((dis_sxa.pool(), x_a), 1)
-        dis_sxa.pool(x_a)
+            pair_a_rfake = torch.cat((self.dis_sa.pool('fetch'), x_a), 1)
+        self.dis_sa.pool('push',x_a)
 
-        if(check = dis_sxb.pool() == 0):
+        if(len(self.dis_sb.pool_) == 0):
+            print(len(self.dis_sb.pool_))
             pair_b_rfake = torch.cat((x_a, x_b), 1)
         else:
-            pair_b_rfake = torch.cat((dis_sxb.pool(), x_b), 1)
-        dis_sxb.pool(x_b)
+            pair_b_rfake = torch.cat((self.dis_sb.pool('fetch'), x_b), 1)
+        self.dis_sb.pool('push',x_b)
 
         # real real data -> 1
         pair_a_rreal = torch.cat((x_adf, x_a), 1)
@@ -311,10 +313,10 @@ class MUNIT_Trainer(nn.Module):
         # D loss
         self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), x_a)
         self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), x_b)
-        self.loss_dis_sxa = (self.dis_sa.calc_dis_loss(pair_a_rfake.detach(), pair_a_rreal.detach.detach())+self.dis_sa.calc_dis_loss(pair_a_ffake.detach(), pair_a_rreal.detach.detach())) / 2
-        self.loss_dis_sxb = (self.dis_sb.calc_dis_loss(pair_b_rfake.detach(), pair_b_rreal.detach.detach())+self.dis_sb.calc_dis_loss(pair_b_ffake.detach(), pair_b_rreal.detach.detach())) / 2
+        self.loss_dis_sxa = (self.dis_sa.calc_dis_loss(pair_a_rfake.detach(), pair_a_rreal.detach()) + self.dis_sa.calc_dis_loss(pair_a_ffake.detach(), pair_a_rreal.detach())) / 2
+        self.loss_dis_sxb = (self.dis_sb.calc_dis_loss(pair_b_rfake.detach(), pair_b_rreal.detach()) + self.dis_sb.calc_dis_loss(pair_b_ffake.detach(), pair_b_rreal.detach())) / 2
 
-        self.loss_dis_total = hyperparameters['gan_w'] * self.loss_dis_xa + hyperparameters['gan_w'] * self.loss_dis_xb + hyperparameters['gan_w'] * self.loss_dis_sxa + hyperparameters['gan_w'] * self.loss_dis_sxb
+        self.loss_dis_total = hyperparameters['gan_w'] * self.loss_dis_xa + hyperparameters['gan_w'] * self.loss_dis_xb + hyperparameters['gan_wp'] * self.loss_dis_sxa + hyperparameters['gan_wp'] * self.loss_dis_sxb
         self.loss_dis_total.backward()
         self.dis_opt.step()
 

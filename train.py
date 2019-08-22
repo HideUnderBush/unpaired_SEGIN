@@ -58,7 +58,7 @@ shutil.copy(opts.config, os.path.join(output_directory, 'config.yaml')) # copy c
 # Start training
 iterations = trainer.resume(checkpoint_directory, hyperparameters=config) if opts.resume else 0
 while True:
-    for it, (images_a, images_b, train_loader_adf, train_loader_bdf) in enumerate(zip(train_loader_a, train_loader_b, train_loader_adf, train_loader_bdf)):
+    for it, (images_a, images_b, images_adf, images_bdf) in enumerate(zip(train_loader_a, train_loader_b, train_loader_adf, train_loader_bdf)):
         trainer.update_learning_rate()
         images_a, images_b, images_adf, images_bdf = images_a.cuda().detach(), images_b.cuda().detach(), images_adf.cuda().detach(), images_bdf.cuda().detach()
 

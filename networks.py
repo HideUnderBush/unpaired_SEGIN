@@ -84,16 +84,14 @@ class MsImageDis(nn.Module):
                 assert 0, "Unsupported GAN type: {}".format(self.gan_type)
         return loss
 
-    def pool(self, push=None):
-        if(push):
-            if(self.pool_.count()>self.pool_size):
+    def pool(self, operation='fetch', push=None):
+        if(operation == 'push'):
+            if(len(self.pool_)>self.pool_size):
                 self.pool_.pop()
             self.pool_.insert(0, push)
-        elif(len(self.pool_) != 0):
+        elif(operation == 'fetch' and len(self.pool_) != 0):
             draw = self.pool_[len(self.pool_)-1]
             return draw
-        else:
-            return 0
 
 ##################################################################################
 # Generator
