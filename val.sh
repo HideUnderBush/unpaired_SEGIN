@@ -1,0 +1,1 @@
+python3 test.py --config configs/edges2shoes_folder.yaml --input /home/chloe/datasets/edges2shoes/testA/83_AB.jpg --output_folder outputs --checkpoint /home/chloe/munit_warp_softmax/outputs/edges2shoes_folder/checkpoints/gen_00680000.pt --a2b 1 --style /home/chloe/datasets/edges2shoes/testB/168_AB.jpg 

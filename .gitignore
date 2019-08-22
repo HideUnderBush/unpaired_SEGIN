@@ -1,0 +1,5 @@
+outputs/
+*.pth
+logs/
+__pycache__/
+models/
