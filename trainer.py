@@ -47,7 +47,9 @@ class MUNIT_Trainer(nn.Module):
         # Network weight initialization
         self.apply(weights_init(hyperparameters['init']))
         self.dis_a.apply(weights_init('gaussian'))
+        self.dis_sa.apply(weights_init('gaussian'))
         self.dis_b.apply(weights_init('gaussian'))
+        self.dis_sb.apply(weights_init('gaussian'))
         if hyperparameters['gen']['CE_method'] == 'vgg':
             self.gen_a.content_init()
             self.gen_b.content_init()
@@ -190,8 +192,6 @@ class MUNIT_Trainer(nn.Module):
         self.loss_gen_recon_c_b = self.recon_criterion(c_b_recon, c_b)
         self.loss_gen_cycrecon_x_a = self.recon_criterion(x_aba, x_a) if hyperparameters['recon_x_cyc_w'] > 0 else 0
         self.loss_gen_cycrecon_x_b = self.recon_criterion(x_bab, x_b) if hyperparameters['recon_x_cyc_w'] > 0 else 0
-        #self.loss_gen_cycrecon_s_a = self.recon_criterion(s_aba, s_a_prime) if hyperparameters['recon_x_cyc_w'] > 0 else 0
-        #self.loss_gen_cycrecon_s_b = self.recon_criterion(s_bab, s_b_prime) if hyperparameters['recon_x_cyc_w'] > 0 else 0
 
         # GAN loss
         self.loss_gen_adv_xa = self.dis_a.calc_gen_loss(x_ba)
@@ -317,8 +317,8 @@ class MUNIT_Trainer(nn.Module):
         # D loss
         self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), x_a)
         self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), x_b)
-        self.loss_dis_sxa = (self.dis_sa.calc_dis_loss(pair_a_rfake, pair_a_rreal) + self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)) / 2
-        self.loss_dis_sxb = (self.dis_sb.calc_dis_loss(pair_b_rfake, pair_b_rreal) + self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)) / 2
+        self.loss_dis_sxa = (self.dis_sa.calc_dis_loss(pair_a_rfake, pair_a_rreal) + self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal))
+        self.loss_dis_sxb = (self.dis_sb.calc_dis_loss(pair_b_rfake, pair_b_rreal) + self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)) 
         #self.loss_dis_sxa = self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)
         #self.loss_dis_sxb = self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)
 
