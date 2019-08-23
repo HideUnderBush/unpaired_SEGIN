@@ -25,6 +25,9 @@ parser.add_argument("--resume", action="store_true")
 parser.add_argument('--trainer', type=str, default='MUNIT', help="MUNIT|UNIT")
 opts = parser.parse_args()
 
+torch.manual_seed(7)
+torch.cuda.manual_seed_all
+
 cudnn.benchmark = True
 torch.cuda.set_device(1)
 
@@ -56,6 +59,7 @@ train_writer = tensorboardX.SummaryWriter(os.path.join(opts.output_path + "/logs
 output_directory = os.path.join(opts.output_path + "/outputs", model_name)
 checkpoint_directory, image_directory = prepare_sub_folder(output_directory)
 shutil.copy(opts.config, os.path.join(output_directory, 'config.yaml')) # copy config file to output folder
+shutil.copy('./trainer.py', os.path.join(output_directory, 'trainer_current.py')) # copy trainer file to output folder
 
 # Start training
 iterations = trainer.resume(checkpoint_directory, hyperparameters=config) if opts.resume else 0
