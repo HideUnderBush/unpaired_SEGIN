@@ -5,11 +5,13 @@ Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses
 from networks import AdaINGen, MsImageDis
 from utils import weights_init, get_model_list, vgg_preprocess, load_vgg16, get_scheduler
 from torch.autograd import Variable
+from torchvision import transforms
 import numpy as np
 import torch.nn.functional as F
 import torch
 import torch.nn as nn
 import os
+import sys
 
 class MUNIT_Trainer(nn.Module):
     def __init__(self, hyperparameters):
@@ -46,8 +48,9 @@ class MUNIT_Trainer(nn.Module):
         self.apply(weights_init(hyperparameters['init']))
         self.dis_a.apply(weights_init('gaussian'))
         self.dis_b.apply(weights_init('gaussian'))
-        self.gen_a.content_init()
-        self.gen_b.content_init()
+        if hyperparameters['gen']['CE_method'] == 'vgg':
+            self.gen_a.content_init()
+            self.gen_b.content_init()
 
         # Load VGG model if needed
         if 'vgg_w' in hyperparameters.keys() and hyperparameters['vgg_w'] > 0:
@@ -62,9 +65,9 @@ class MUNIT_Trainer(nn.Module):
     def normalize_feat(self, feat):
         bs, c, H, W = feat.shape
         feat = feat.view(bs, c, -1)
-        feat_norm = torch.norm(feat, 2, 1, keepdim=True)
+        feat_norm = torch.norm(feat, 1, 1, keepdim=True) + sys.float_info.epsilon
         feat = torch.div(feat, feat_norm)
-        print(max(feat))
+        #print(max(feat))
         return feat
 
     def norm_two_domain(self, feat_c, feat_s):
@@ -104,9 +107,9 @@ class MUNIT_Trainer(nn.Module):
 
     def warp_style(self, cur_content, ref_content, ref_style):
         # normalize feature
-        #cur_content= self.normalize_feat(cur_content)
-        #ref_content= self.normalize_feat(ref_content)
-        cur_content, ref_content = self.norm_two_domain(cur_content, ref_content)
+        cur_content= self.normalize_feat(cur_content)
+        ref_content= self.normalize_feat(ref_content)
+        #cur_content, ref_content = self.norm_two_domain(cur_content, ref_content)
         cur_content = cur_content.permute(0, 2, 1) 
 
         # calculate similarity
@@ -132,8 +135,6 @@ class MUNIT_Trainer(nn.Module):
 
     def forward(self, x_a, x_b):
         self.eval()
-        s_a = Variable(self.s_a)
-        s_b = Variable(self.s_b)
         c_a, s_a_fake = self.gen_a.encode(x_a)
         c_b, s_b_fake = self.gen_b.encode(x_b)
 
@@ -168,11 +169,11 @@ class MUNIT_Trainer(nn.Module):
 
         # decode again (if needed)
         # to warp style first
-        _, s_aba = self.warp_style(c_b, c_a, s_a_recon)
-        _, s_bab = self.warp_style(c_a, c_b, s_b_recon)
+        _, s_aba = self.warp_style(c_b_recon, c_a, s_a_recon)
+        _, s_bab = self.warp_style(c_a_recon, c_b, s_b_recon)
         # to reconstruct then
-        #x_aba = self.gen_a.decode(c_a_recon, s_aba) if hyperparameters['recon_x_cyc_w'] > 0 else None
-        #x_bab = self.gen_b.decode(c_b_recon, s_bab) if hyperparameters['recon_x_cyc_w'] > 0 else None
+        x_aba = self.gen_a.decode(c_a_recon, s_aba) if hyperparameters['recon_x_cyc_w'] > 0 else None
+        x_bab = self.gen_b.decode(c_b_recon, s_bab) if hyperparameters['recon_x_cyc_w'] > 0 else None
 
         # prepare paired data for adv generator
         pair_a_ffake = torch.cat((x_ba, x_a), 1)
@@ -183,10 +184,12 @@ class MUNIT_Trainer(nn.Module):
         self.loss_gen_recon_x_b = self.recon_criterion(x_b_recon, x_b)
         self.loss_gen_recon_s_a = self.recon_criterion(s_aba, s_a_prime)
         self.loss_gen_recon_s_b = self.recon_criterion(s_bab, s_b_prime)
+        #self.loss_gen_recon_s_b = self.recon_criterion(s_ab, s_b_prime)
+        #self.loss_gen_recon_s_a = self.recon_criterion(s_ba, s_a_prime)
         self.loss_gen_recon_c_a = self.recon_criterion(c_a_recon, c_a)
         self.loss_gen_recon_c_b = self.recon_criterion(c_b_recon, c_b)
-        #self.loss_gen_cycrecon_x_a = self.recon_criterion(x_aba, x_a) if hyperparameters['recon_x_cyc_w'] > 0 else 0
-        #self.loss_gen_cycrecon_x_b = self.recon_criterion(x_bab, x_b) if hyperparameters['recon_x_cyc_w'] > 0 else 0
+        self.loss_gen_cycrecon_x_a = self.recon_criterion(x_aba, x_a) if hyperparameters['recon_x_cyc_w'] > 0 else 0
+        self.loss_gen_cycrecon_x_b = self.recon_criterion(x_bab, x_b) if hyperparameters['recon_x_cyc_w'] > 0 else 0
         #self.loss_gen_cycrecon_s_a = self.recon_criterion(s_aba, s_a_prime) if hyperparameters['recon_x_cyc_w'] > 0 else 0
         #self.loss_gen_cycrecon_s_b = self.recon_criterion(s_bab, s_b_prime) if hyperparameters['recon_x_cyc_w'] > 0 else 0
 
@@ -195,26 +198,27 @@ class MUNIT_Trainer(nn.Module):
         self.loss_gen_adv_xb = self.dis_b.calc_gen_loss(x_ab)
         self.loss_gen_adv_sxa = self.dis_sa.calc_gen_loss(pair_a_ffake)
         self.loss_gen_adv_sxb = self.dis_sb.calc_gen_loss(pair_b_ffake)
+
         # domain-invariant perceptual loss
-        #self.loss_gen_vgg_a = self.compute_vgg_loss_new(self.vgg, x_ba, x_b) if hyperparameters['vgg_w'] > 0 else 0
-        #self.loss_gen_vgg_b = self.compute_vgg_loss_new(self.vgg, x_ab, x_a) if hyperparameters['vgg_w'] > 0 else 0
+        self.loss_gen_vgg_a = self.compute_vgg_loss(self.vgg, x_ba, x_b) if hyperparameters['vgg_w'] > 0 else 0
+        self.loss_gen_vgg_b = self.compute_vgg_loss(self.vgg, x_ab, x_a) if hyperparameters['vgg_w'] > 0 else 0
         # total loss
         self.loss_gen_total = hyperparameters['gan_w'] * self.loss_gen_adv_xa + \
                               hyperparameters['gan_w'] * self.loss_gen_adv_xa + \
                               hyperparameters['gan_wp'] * self.loss_gen_adv_sxa + \
                               hyperparameters['gan_wp'] * self.loss_gen_adv_sxb + \
                               hyperparameters['recon_x_w'] * self.loss_gen_recon_x_a + \
+                              hyperparameters['recon_x_w'] * self.loss_gen_recon_x_b + \
                               hyperparameters['recon_c_w'] * self.loss_gen_recon_c_a + \
                               hyperparameters['recon_c_w'] * self.loss_gen_recon_c_b + \
-                              hyperparameters['recon_x_w'] * self.loss_gen_recon_x_b + \
                               hyperparameters['recon_s_w'] * self.loss_gen_recon_s_a + \
-                              hyperparameters['recon_s_w'] * self.loss_gen_recon_s_b 
-                              #hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_x_a + \
-                              #hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_x_b + \
+                              hyperparameters['recon_s_w'] * self.loss_gen_recon_s_b + \
+                              hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_x_a + \
+                              hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_x_b + \
+                              hyperparameters['vgg_w'] * self.loss_gen_vgg_a + \
+                              hyperparameters['vgg_w'] * self.loss_gen_vgg_b
                               #hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_s_a + \
                               #hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_s_b + \
-                              #hyperparameters['vgg_w'] * self.loss_gen_vgg_a + \
-                              #hyperparameters['vgg_w'] * self.loss_gen_vgg_b
         self.loss_gen_total.backward()
         self.gen_opt.step()
 
@@ -232,7 +236,7 @@ class MUNIT_Trainer(nn.Module):
         target_feat = vgg(target_vgg)
         return self.recon_criterion(img_feat, target_feat)
 
-    def sample(self, x_a, x_b):
+    def sample(self, x_a, x_b, x_adf, x_bdf):
         self.eval()
         #s_a1 = Variable(self.s_a)
         #s_b1 = Variable(self.s_b)
@@ -268,7 +272,7 @@ class MUNIT_Trainer(nn.Module):
         x_ba1, x_ba2 = torch.cat(x_ba1), torch.cat(x_ba2)
         x_ab1, x_ab2 = torch.cat(x_ab1), torch.cat(x_ab2)
         self.train()
-        return x_a, x_a_recon, x_ab1, x_ab2, x_b, x_b_recon, x_ba1, x_ba2
+        return x_a, x_adf, x_a_recon, x_ab1, x_ab2, x_b, x_bdf, x_b_recon, x_ba1, x_ba2
 
     def dis_update(self, x_a, x_b, x_adf, x_bdf, hyperparameters):
 
@@ -307,14 +311,16 @@ class MUNIT_Trainer(nn.Module):
         pair_a_rreal = torch.cat((x_adf, x_a), 1)
         pair_b_rreal = torch.cat((x_bdf, x_b), 1)
         # fake fake data -> 0
-        pair_a_ffake = torch.cat((x_ba, x_a), 1)
-        pair_b_ffake = torch.cat((x_ab, x_b), 1)
+        pair_a_ffake = torch.cat((x_ba.detach(), x_a), 1)
+        pair_b_ffake = torch.cat((x_ab.detach(), x_b), 1)
 
         # D loss
         self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), x_a)
         self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), x_b)
-        self.loss_dis_sxa = (self.dis_sa.calc_dis_loss(pair_a_rfake.detach(), pair_a_rreal.detach()) + self.dis_sa.calc_dis_loss(pair_a_ffake.detach(), pair_a_rreal.detach())) / 2
-        self.loss_dis_sxb = (self.dis_sb.calc_dis_loss(pair_b_rfake.detach(), pair_b_rreal.detach()) + self.dis_sb.calc_dis_loss(pair_b_ffake.detach(), pair_b_rreal.detach())) / 2
+        self.loss_dis_sxa = (self.dis_sa.calc_dis_loss(pair_a_rfake, pair_a_rreal) + self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)) / 2
+        self.loss_dis_sxb = (self.dis_sb.calc_dis_loss(pair_b_rfake, pair_b_rreal) + self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)) / 2
+        #self.loss_dis_sxa = self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)
+        #self.loss_dis_sxb = self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)
 
         self.loss_dis_total = hyperparameters['gan_w'] * self.loss_dis_xa + hyperparameters['gan_w'] * self.loss_dis_xb + hyperparameters['gan_wp'] * self.loss_dis_sxa + hyperparameters['gan_wp'] * self.loss_dis_sxb
         self.loss_dis_total.backward()

@@ -40,13 +40,15 @@ if opts.trainer == 'MUNIT':
 else:
     sys.exit("Only support MUNIT|UNIT")
 trainer.cuda()
-train_loader_a, train_loader_b, test_loader_a, test_loader_b, train_loader_adf, train_loader_bdf = get_all_data_loaders(config)
+train_loader_a, train_loader_b, test_loader_a, test_loader_b, train_loader_adf, train_loader_bdf, test_loader_adf, test_loader_bdf = get_all_data_loaders(config)
 train_display_images_a = torch.stack([train_loader_a.dataset[i] for i in range(display_size)]).cuda()
 train_display_images_b = torch.stack([train_loader_b.dataset[i] for i in range(display_size)]).cuda()
 train_display_images_adf = torch.stack([train_loader_adf.dataset[i] for i in range(display_size)]).cuda()
 train_display_images_bdf = torch.stack([train_loader_bdf.dataset[i] for i in range(display_size)]).cuda()
 test_display_images_a = torch.stack([test_loader_a.dataset[i] for i in range(display_size)]).cuda()
 test_display_images_b = torch.stack([test_loader_b.dataset[i] for i in range(display_size)]).cuda()
+test_display_images_adf = torch.stack([test_loader_adf.dataset[i] for i in range(display_size)]).cuda()
+test_display_images_bdf = torch.stack([test_loader_bdf.dataset[i] for i in range(display_size)]).cuda()
 
 # Setup logger and output folders
 model_name = os.path.splitext(os.path.basename(opts.config))[0]
@@ -76,8 +78,8 @@ while True:
         # Write images
         if (iterations + 1) % config['image_save_iter'] == 0:
             with torch.no_grad():
-                test_image_outputs = trainer.sample(test_display_images_a, test_display_images_b)
-                train_image_outputs = trainer.sample(train_display_images_a, train_display_images_b)
+                test_image_outputs = trainer.sample(test_display_images_a, test_display_images_b, test_display_images_adf, test_display_images_bdf)
+                train_image_outputs = trainer.sample(train_display_images_a, train_display_images_b, train_display_images_adf, train_display_images_bdf)
             write_2images(test_image_outputs, display_size, image_directory, 'test_%08d' % (iterations + 1))
             write_2images(train_image_outputs, display_size, image_directory, 'train_%08d' % (iterations + 1))
             # HTML
@@ -85,7 +87,7 @@ while True:
 
         if (iterations + 1) % config['image_display_iter'] == 0:
             with torch.no_grad():
-                image_outputs = trainer.sample(train_display_images_a, train_display_images_b)
+                image_outputs = trainer.sample(train_display_images_a, train_display_images_b, train_display_images_adf, train_display_images_bdf)
             write_2images(image_outputs, display_size, image_directory, 'train_current')
 
         # Save network weights

@@ -86,7 +86,7 @@ class MsImageDis(nn.Module):
 
     def pool(self, operation='fetch', push=None):
         if(operation == 'push'):
-            if(len(self.pool_)>self.pool_size):
+            if(len(self.pool_)>=self.pool_size):
                 self.pool_.pop()
             self.pool_.insert(0, push)
         elif(operation == 'fetch' and len(self.pool_) != 0):
@@ -108,13 +108,16 @@ class AdaINGen(nn.Module):
         activ = params['activ']
         pad_type = params['pad_type']
         mlp_dim = params['mlp_dim']
+        content_encoder_method = params['CE_method']
 
         # style encoder
         self.enc_style = Encoder(n_downsample, n_res, input_dim, dim, 'in', activ, pad_type=pad_type)
 
         # content encoder
-        #self.enc_content = ContentEncoder(n_downsample, n_res, input_dim, dim, 'in', activ, pad_type=pad_type)
-        self.enc_content = ContentEncoder()
+        if content_encoder_method != 'vgg':
+            self.enc_content = Encoder(n_downsample, n_res, input_dim, dim, 'in', activ, pad_type=pad_type)
+        else:
+            self.enc_content = ContentEncoder()
 
         # decoder input has channel number = channel of encoded results * 2
         #self.dec = Decoder(n_downsample, n_res, self.enc_content.output_dim*2, input_dim, res_norm='adain', activ=activ, pad_type=pad_type)
