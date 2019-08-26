@@ -67,7 +67,7 @@ class MUNIT_Trainer(nn.Module):
     def normalize_feat(self, feat):
         bs, c, H, W = feat.shape
         feat = feat.view(bs, c, -1)
-        feat_norm = torch.norm(feat, 1, 1, keepdim=True) + sys.float_info.epsilon
+        feat_norm = torch.norm(feat, 2, 1, keepdim=True) + sys.float_info.epsilon
         feat = torch.div(feat, feat_norm)
         #print(max(feat))
         return feat
@@ -171,8 +171,8 @@ class MUNIT_Trainer(nn.Module):
 
         # decode again (if needed)
         # to warp style first
-        _, s_aba = self.warp_style(c_b_recon, c_a, s_a_recon)
-        _, s_bab = self.warp_style(c_a_recon, c_b, s_b_recon)
+        _, s_aba = self.warp_style(c_b, c_a, s_a_recon)
+        _, s_bab = self.warp_style(c_a, c_b, s_b_recon)
         # to reconstruct then
         x_aba = self.gen_a.decode(c_a_recon, s_aba) if hyperparameters['recon_x_cyc_w'] > 0 else None
         x_bab = self.gen_b.decode(c_b_recon, s_bab) if hyperparameters['recon_x_cyc_w'] > 0 else None
@@ -204,7 +204,7 @@ class MUNIT_Trainer(nn.Module):
         self.loss_gen_vgg_b = self.compute_vgg_loss(self.vgg, x_ab, x_a) if hyperparameters['vgg_w'] > 0 else 0
         # total loss
         self.loss_gen_total = hyperparameters['gan_w'] * self.loss_gen_adv_xa + \
-                              hyperparameters['gan_w'] * self.loss_gen_adv_xa + \
+                              hyperparameters['gan_w'] * self.loss_gen_adv_xb + \
                               hyperparameters['gan_wp'] * self.loss_gen_adv_sxa + \
                               hyperparameters['gan_wp'] * self.loss_gen_adv_sxb + \
                               hyperparameters['recon_x_w'] * self.loss_gen_recon_x_a + \
@@ -315,10 +315,12 @@ class MUNIT_Trainer(nn.Module):
         pair_b_ffake = torch.cat((x_ab.detach(), x_b), 1)
 
         # D loss
-        self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), x_a)
-        self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), x_b)
-        self.loss_dis_sxa = (self.dis_sa.calc_dis_loss(pair_a_rfake, pair_a_rreal) + self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal))
-        self.loss_dis_sxb = (self.dis_sb.calc_dis_loss(pair_b_rfake, pair_b_rreal) + self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)) 
+        #self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), x_a)
+        #self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), x_b)
+        self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), self.dis_sa.pool('fetch'))
+        self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), self.dis_sb.pool('fetch'))
+        self.loss_dis_sxa = (self.dis_sa.calc_dis_loss(pair_a_rfake, pair_a_rreal) + self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)) / 2
+        self.loss_dis_sxb = (self.dis_sb.calc_dis_loss(pair_b_rfake, pair_b_rreal) + self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)) / 2
         #self.loss_dis_sxa = self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)
         #self.loss_dis_sxb = self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)
 
