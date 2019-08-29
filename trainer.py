@@ -36,12 +36,16 @@ class MUNIT_Trainer(nn.Module):
         beta1 = hyperparameters['beta1']
         beta2 = hyperparameters['beta2']
         dis_params = list(self.dis_a.parameters()) + list(self.dis_b.parameters())
+        dis_style_params = list(self.dis_sa.parameters()) + list(self.dis_sb.parameters())
         gen_params = list(self.gen_a.parameters()) + list(self.gen_b.parameters())
         self.dis_opt = torch.optim.Adam([p for p in dis_params if p.requires_grad],
+                                        lr=lr, betas=(beta1, beta2), weight_decay=hyperparameters['weight_decay'])
+        self.dis_style_opt = torch.optim.Adam([p for p in dis_style_params if p.requires_grad],
                                         lr=lr, betas=(beta1, beta2), weight_decay=hyperparameters['weight_decay'])
         self.gen_opt = torch.optim.Adam([p for p in gen_params if p.requires_grad],
                                         lr=lr, betas=(beta1, beta2), weight_decay=hyperparameters['weight_decay'])
         self.dis_scheduler = get_scheduler(self.dis_opt, hyperparameters)
+        self.dis_style_scheduler = get_scheduler(self.dis_style_opt, hyperparameters)
         self.gen_scheduler = get_scheduler(self.gen_opt, hyperparameters)
 
         # Network weight initialization
@@ -53,6 +57,7 @@ class MUNIT_Trainer(nn.Module):
         if hyperparameters['gen']['CE_method'] == 'vgg':
             self.gen_a.content_init()
             self.gen_b.content_init()
+        self.criterion = nn.L1Loss().cuda()
 
         # Load VGG model if needed
         if 'vgg_w' in hyperparameters.keys() and hyperparameters['vgg_w'] > 0:
@@ -182,22 +187,22 @@ class MUNIT_Trainer(nn.Module):
         pair_b_ffake = torch.cat((x_ab, x_b), 1)
 
         # reconstruction loss
-        self.loss_gen_recon_x_a = self.recon_criterion(x_a_recon, x_a)
-        self.loss_gen_recon_x_b = self.recon_criterion(x_b_recon, x_b)
+        self.loss_gen_recon_x_a = self.criterion(x_a_recon, x_a)
+        self.loss_gen_recon_x_b = self.criterion(x_b_recon, x_b)
         self.loss_gen_recon_s_a = self.recon_criterion(s_aba, s_a_prime)
         self.loss_gen_recon_s_b = self.recon_criterion(s_bab, s_b_prime)
         #self.loss_gen_recon_s_b = self.recon_criterion(s_ab, s_b_prime)
         #self.loss_gen_recon_s_a = self.recon_criterion(s_ba, s_a_prime)
         self.loss_gen_recon_c_a = self.recon_criterion(c_a_recon, c_a)
         self.loss_gen_recon_c_b = self.recon_criterion(c_b_recon, c_b)
-        self.loss_gen_cycrecon_x_a = self.recon_criterion(x_aba, x_a) if hyperparameters['recon_x_cyc_w'] > 0 else 0
-        self.loss_gen_cycrecon_x_b = self.recon_criterion(x_bab, x_b) if hyperparameters['recon_x_cyc_w'] > 0 else 0
+        self.loss_gen_cycrecon_x_a = self.criterion(x_aba, x_a) if hyperparameters['recon_x_cyc_w'] > 0 else 0
+        self.loss_gen_cycrecon_x_b = self.criterion(x_bab, x_b) if hyperparameters['recon_x_cyc_w'] > 0 else 0
 
         # GAN loss
-        self.loss_gen_adv_xa = self.dis_a.calc_gen_loss(x_ba)
-        self.loss_gen_adv_xb = self.dis_b.calc_gen_loss(x_ab)
-        self.loss_gen_adv_sxa = self.dis_sa.calc_gen_loss(pair_a_ffake)
-        self.loss_gen_adv_sxb = self.dis_sb.calc_gen_loss(pair_b_ffake)
+        self.loss_gen_adv_xa = self.gen_a.calc_gen_loss(self.dis_a.forward(x_ba))
+        self.loss_gen_adv_xb = self.gen_b.calc_gen_loss(self.dis_b.forward(x_ab))
+        self.loss_gen_adv_sxa = self.gen_a.calc_gen_loss(self.dis_sa.forward(pair_a_ffake))
+        self.loss_gen_adv_sxb = self.gen_b.calc_gen_loss(self.dis_sb.forward(pair_b_ffake))
 
         # domain-invariant perceptual loss
         self.loss_gen_vgg_a = self.compute_vgg_loss(self.vgg, x_ba, x_b) if hyperparameters['vgg_w'] > 0 else 0
@@ -277,6 +282,7 @@ class MUNIT_Trainer(nn.Module):
     def dis_update(self, x_a, x_b, x_adf, x_bdf, hyperparameters):
 
         self.dis_opt.zero_grad()
+        self.dis_style_opt.zero_grad()
         #s_a = Variable(torch.randn(x_a.size(0), self.style_dim, 1, 1).cuda())
         #s_b = Variable(torch.randn(x_b.size(0), self.style_dim, 1, 1).cuda())
         # encode
@@ -308,8 +314,8 @@ class MUNIT_Trainer(nn.Module):
         self.dis_sb.pool('push',x_b)
 
         # real real data -> 1
-        pair_a_rreal = torch.cat((x_adf, x_a), 1)
-        pair_b_rreal = torch.cat((x_bdf, x_b), 1)
+        pair_a_rreal = torch.cat((x_a, x_adf), 1)
+        pair_b_rreal = torch.cat((x_b, x_bdf), 1)
         # fake fake data -> 0
         pair_a_ffake = torch.cat((x_ba.detach(), x_a), 1)
         pair_b_ffake = torch.cat((x_ab.detach(), x_b), 1)
@@ -319,18 +325,21 @@ class MUNIT_Trainer(nn.Module):
         #self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), x_b)
         self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), self.dis_sa.pool('fetch'))
         self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), self.dis_sb.pool('fetch'))
-        self.loss_dis_sxa = (self.dis_sa.calc_dis_loss(pair_a_rfake, pair_a_rreal) + self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)) / 2
-        self.loss_dis_sxb = (self.dis_sb.calc_dis_loss(pair_b_rfake, pair_b_rreal) + self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)) / 2
-        #self.loss_dis_sxa = self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)
-        #self.loss_dis_sxb = self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)
+        #self.loss_dis_sxa = (self.dis_sa.calc_dis_loss(pair_a_rfake, pair_a_rreal) + self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)) / 2
+        #self.loss_dis_sxb = (self.dis_sb.calc_dis_loss(pair_b_rfake, pair_b_rreal) + self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)) / 2
+        self.loss_dis_sxa = self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)
+        self.loss_dis_sxb = self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)
 
         self.loss_dis_total = hyperparameters['gan_w'] * self.loss_dis_xa + hyperparameters['gan_w'] * self.loss_dis_xb + hyperparameters['gan_wp'] * self.loss_dis_sxa + hyperparameters['gan_wp'] * self.loss_dis_sxb
         self.loss_dis_total.backward()
         self.dis_opt.step()
+        self.dis_style_opt.step()
 
     def update_learning_rate(self):
         if self.dis_scheduler is not None:
             self.dis_scheduler.step()
+        if self.dis_style_scheduler is not None:
+            self.dis_style_scheduler.step()
         if self.gen_scheduler is not None:
             self.gen_scheduler.step()
 
@@ -352,6 +361,7 @@ class MUNIT_Trainer(nn.Module):
         self.gen_opt.load_state_dict(state_dict['gen'])
         # Reinitilize schedulers
         self.dis_scheduler = get_scheduler(self.dis_opt, hyperparameters, iterations)
+        self.dis_style_scheduler = get_scheduler(self.dis_style_opt, hyperparameters, iterations)
         self.gen_scheduler = get_scheduler(self.gen_opt, hyperparameters, iterations)
         print('Resume from iteration %d' % iterations)
         return iterations
