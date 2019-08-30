@@ -3,7 +3,7 @@ Copyright (C) 2017 NVIDIA Corporation.  All rights reserved.
 Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode).
 """
 from networks import AdaINGen, MsImageDis
-from utils import weights_init, get_model_list, vgg_preprocess, load_vgg16, get_scheduler
+from utils import weights_init, get_model_list, vgg_preprocess, load_vgg16, get_scheduler, Timer
 from torch.autograd import Variable
 from torchvision import transforms
 import numpy as np
@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import os
 import sys
+import time
 
 class MUNIT_Trainer(nn.Module):
     def __init__(self, hyperparameters):
@@ -121,12 +122,13 @@ class MUNIT_Trainer(nn.Module):
 
         # calculate similarity
         f = torch.matmul(cur_content, ref_content) # 1 x (H x W) x (H x W)
-        #f_corr = F.softmax(f/0.005, dim=-1) # 1 x (H x W) x (H x W)
-        f_corr = F.softmax(f, dim=-1) # 1 x (H x W) x (H x W)
+        f_corr = F.softmax(f/0.005, dim=-1) # 1 x (H x W) x (H x W)
+        #f_corr = F.softmax(f, dim=-1) # 1 x (H x W) x (H x W)
 
         # get corr index replace softmax 
         bs, HW, WH = f_corr.shape
         corr_index = torch.argmax(f_corr, dim=-1).squeeze(0)
+
 
         # collect ref style
         bs, c, H, W = ref_style.shape
@@ -171,7 +173,7 @@ class MUNIT_Trainer(nn.Module):
         x_ba = self.gen_a.decode(c_b, s_ba)
         x_ab = self.gen_b.decode(c_a, s_ab)
         # encode again
-        c_b_recon, s_a_recon = self.gen_a.encode(x_ba)
+        c_b_recon, s_a_recon = self.gen_a.encode(x_ba) # now the s_a_recon matches the structure of B
         c_a_recon, s_b_recon = self.gen_b.encode(x_ab)
 
         # decode again (if needed)
@@ -179,8 +181,8 @@ class MUNIT_Trainer(nn.Module):
         _, s_aba = self.warp_style(c_b, c_a, s_a_recon)
         _, s_bab = self.warp_style(c_a, c_b, s_b_recon)
         # to reconstruct then
-        x_aba = self.gen_a.decode(c_a_recon, s_aba) if hyperparameters['recon_x_cyc_w'] > 0 else None
-        x_bab = self.gen_b.decode(c_b_recon, s_bab) if hyperparameters['recon_x_cyc_w'] > 0 else None
+        x_aba = self.gen_a.decode(c_a_recon, s_a_prime) if hyperparameters['recon_x_cyc_w'] > 0 else None
+        x_bab = self.gen_b.decode(c_b_recon, s_b_prime) if hyperparameters['recon_x_cyc_w'] > 0 else None
 
         # prepare paired data for adv generator
         pair_a_ffake = torch.cat((x_ba, x_a), 1)
@@ -190,7 +192,7 @@ class MUNIT_Trainer(nn.Module):
         self.loss_gen_recon_x_a = self.criterion(x_a_recon, x_a)
         self.loss_gen_recon_x_b = self.criterion(x_b_recon, x_b)
         self.loss_gen_recon_s_a = self.recon_criterion(s_aba, s_a_prime)
-        self.loss_gen_recon_s_b = self.recon_criterion(s_bab, s_b_prime)
+        self.loss_gen_recon_s_b = self.recon_criterion(s_bab, s_b_prime) # default is s_bab, need to test s_b_recon
         #self.loss_gen_recon_s_b = self.recon_criterion(s_ab, s_b_prime)
         #self.loss_gen_recon_s_a = self.recon_criterion(s_ba, s_a_prime)
         self.loss_gen_recon_c_a = self.recon_criterion(c_a_recon, c_a)
@@ -225,6 +227,7 @@ class MUNIT_Trainer(nn.Module):
                               #hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_s_a + \
                               #hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_s_b + \
         self.loss_gen_total.backward()
+        
         self.gen_opt.step()
 
     def compute_vgg_loss(self, vgg, img, target):
