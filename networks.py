@@ -6,6 +6,7 @@ from torch import nn
 from torch.autograd import Variable
 import torch
 import torch.nn.functional as F
+import re
 try:
     from itertools import izip as zip
 except ImportError: # will be 3.x series
@@ -31,6 +32,7 @@ class MsImageDis(nn.Module):
         self.downsample = nn.AvgPool2d(3, stride=2, padding=[1, 1], count_include_pad=False)
         self.cnns = nn.ModuleList()
         self.pool_ = []
+        self.criterion = nn.MSELoss().cuda() 
         for _ in range(self.num_scales):
             self.cnns.append(self._make_net())
 
@@ -69,6 +71,7 @@ class MsImageDis(nn.Module):
             else:
                 assert 0, "Unsupported GAN type: {}".format(self.gan_type)
         return loss
+
 
     def calc_gen_loss(self, input_fake):
         # calculate the loss to train G
@@ -109,19 +112,20 @@ class AdaINGen(nn.Module):
         pad_type = params['pad_type']
         mlp_dim = params['mlp_dim']
         content_encoder_method = params['CE_method']
+        self.gan_type = params['gan_type']
 
         # style encoder
-        self.enc_style = Encoder(n_downsample, n_res, input_dim, dim, 'in', activ, pad_type=pad_type)
+        self.enc_style = Encoder(n_downsample, n_res, input_dim, dim, 'bn', activ, pad_type=pad_type)
 
         # content encoder
         if content_encoder_method != 'vgg':
-            self.enc_content = Encoder(n_downsample, n_res, input_dim, dim, 'in', activ, pad_type=pad_type)
+            self.enc_content = Encoder(n_downsample, n_res, input_dim, dim, 'bn', activ, pad_type=pad_type)
         else:
             self.enc_content = ContentEncoder()
 
         # decoder input has channel number = channel of encoded results * 2
-        #self.dec = Decoder(n_downsample, n_res, self.enc_content.output_dim*2, input_dim, res_norm='adain', activ=activ, pad_type=pad_type)
-        self.dec = Decoder(n_downsample, n_res, self.enc_style.output_dim*2, input_dim, res_norm='sn', activ=activ, pad_type=pad_type)
+        #self.dec = Decoder(n_downsample, n_res, self.enc_style.output_dim*2, input_dim, res_norm='spade', activ=activ, pad_type=pad_type)
+        self.dec = Decoder(n_downsample, n_res, self.enc_style.output_dim*2, input_dim, res_norm='ln', activ=activ, pad_type=pad_type)
 
         # MLP to generate AdaIN parameters
         #self.mlp = MLP(style_dim, self.get_num_adain_params(self.dec), mlp_dim, 3, norm='none', activ=activ)
@@ -150,16 +154,31 @@ class AdaINGen(nn.Module):
         for param in self.enc_content.parameters():
             param.requires_grad = True 
 
+    def calc_gen_loss(self, outs0):
+        # calculate the loss to train G
+        #outs0 = self.forward(input_fake)
+        loss = 0
+        for it, (out0) in enumerate(outs0):
+            if self.gan_type == 'lsgan':
+                loss += torch.mean((out0 - 1)**2) # LSGAN
+            elif self.gan_type == 'nsgan':
+                all1 = Variable(torch.ones_like(out0.data).cuda(), requires_grad=False)
+                loss += torch.mean(F.binary_cross_entropy(F.sigmoid(out0), all1))
+            else:
+                assert 0, "Unsupported GAN type: {}".format(self.gan_type)
+        return loss
+
     def assign_adain_params(self, adain_params, model):
         # assign the adain_params to the AdaIN layers in model
         for m in model.modules():
             if m.__class__.__name__ == "AdaptiveInstanceNorm2d":
-                mean = adain_params[:, :m.num_features]
-                std = adain_params[:, m.num_features:2*m.num_features]
-                m.bias = mean.contiguous().view(-1)
-                m.weight = std.contiguous().view(-1)
-                if adain_params.size(1) > 2*m.num_features:
-                    adain_params = adain_params[:, 2*m.num_features:]
+                mean = torch.mean(adain_params,dim=1)
+                std = torch.std(adain_params, dim=1)
+                m.bias = mean.contiguous()
+                m.weight = std.contiguous()
+                print(m.weight.shape)
+                #if adain_params.size(1) > 2*m.num_features:
+                #    adain_params = adain_params[:, 2*m.num_features:]
 
     def get_num_adain_params(self, model):
         # return the number of AdaIN parameters needed by the model
@@ -319,6 +338,7 @@ class Decoder(nn.Module):
 ##################################################################################
 # Sequential Models
 ##################################################################################
+
 class ResBlocks(nn.Module):
     def __init__(self, num_blocks, dim, norm='in', activation='relu', pad_type='zero'):
         super(ResBlocks, self).__init__()
@@ -361,7 +381,7 @@ class ResBlock(nn.Module):
         out = self.model(x)
         out += residual
         return out
-
+ 
 class Conv2dBlock(nn.Module):
     def __init__(self, input_dim ,output_dim, kernel_size, stride,
                  padding=0, norm='none', activation='relu', pad_type='zero'):
@@ -651,3 +671,60 @@ class SpectralNorm(nn.Module):
     def forward(self, *args):
         self._update_u_v()
         return self.module.forward(*args)
+
+class SPADE(nn.Module):
+    def __init__(self, config_text, norm_nc=256, label_nc=256):
+        super().__init__()
+
+        #assert config_text.startswith('spade')
+        #parsed = re.search('spade(\D+)(\d)x\d', config_text)
+        #param_free_norm_type = str(parsed.group(1))
+        #ks = int(parsed.group(2))
+        param_free_norm_type = config_text
+
+        if param_free_norm_type == 'instance':
+            self.param_free_norm = nn.InstanceNorm2d(norm_nc, affine=False)
+        elif param_free_norm_type == 'syncbatch':
+            self.param_free_norm = SynchronizedBatchNorm2d(norm_nc, affine=False)
+        elif param_free_norm_type == 'batch':
+            self.param_free_norm = nn.BatchNorm2d(norm_nc, affine=False)
+        else:
+            raise ValueError('%s is not a recognized param-free norm type in SPADE'
+                             % param_free_norm_type)
+
+        # The dimension of the intermediate embedding space. Yes, hardcoded.
+        self.nhidden = 256 
+
+        ks = 3
+        pw = ks // 2
+        self.mlp_shared = nn.Sequential(
+            nn.Conv2d(label_nc//2, self.nhidden, kernel_size=ks, padding=pw),
+            nn.ReLU()
+        )
+        self.mlp_gamma = nn.Conv2d(self.nhidden, norm_nc//2, kernel_size=ks, padding=pw)
+        self.mlp_beta = nn.Conv2d(self.nhidden, norm_nc//2, kernel_size=ks, padding=pw)
+
+    def forward(self, input_):
+
+        features_nc = input_.shape[1] // 2
+        x = input_[:,0:features_nc,:,:]
+        #print(x.shape)
+        segmap = input_[:,features_nc:,:,:]
+        #print(segmap.shape)
+        # Part 1. generate parameter-free normalized activations
+        normalized = self.param_free_norm(input_)
+
+        # Part 2. produce scaling and bias conditioned on semantic map
+        #segmap = F.interpolate(segmap, size=x.size()[2:], mode='nearest')
+        #actv = self.mlp_shared(segmap)
+        #gamma = self.mlp_gamma(actv)
+        #beta = self.mlp_beta(actv)
+        gamma = self.mlp_gamma(segmap)
+        beta = self.mlp_beta(segmap)
+
+        # apply scale and bias
+        out_x = normalized[:,0:features_nc,:,:] * (1 + gamma) + beta
+        out_segmap = normalized[:,features_nc:,:,:] 
+        out = torch.cat((out_x, out_segmap), dim=1)
+
+        return out
