@@ -6,6 +6,7 @@ from networks import AdaINGen, MsImageDis
 from utils import weights_init, get_model_list, vgg_preprocess, load_vgg16, get_scheduler, Timer
 from torch.autograd import Variable
 from torchvision import transforms
+from ContextualLoss import ContextualLoss 
 import numpy as np
 import torch.nn.functional as F
 import torch
@@ -61,6 +62,7 @@ class MUNIT_Trainer(nn.Module):
         self.criterion = nn.L1Loss().cuda()
         self.triplet_loss = nn.TripletMarginLoss(margin=1.0, p=2).cuda()
         self.kld = nn.KLDivLoss()
+        self.contextual_loss = ContextualLoss()
 
         # Load VGG model if needed
         if 'vgg_w' in hyperparameters.keys() and hyperparameters['vgg_w'] > 0:
@@ -206,6 +208,8 @@ class MUNIT_Trainer(nn.Module):
         self.loss_gen_recon_c_b = self.recon_criterion(c_b_recon, c_b)
         self.loss_gen_kl_ab = self.kl_loss(x_ab, x_b)
         self.loss_gen_kl_ba = self.kl_loss(x_ba, x_a)
+        self.loss_gen_cx_a = self.contextual_loss(s_ba, s_a_prime)
+        self.loss_gen_cx_b = self.contextual_loss(s_ab, s_b_prime)
         self.loss_gen_cycrecon_x_a = self.criterion(x_aba, x_a) if hyperparameters['recon_x_cyc_w'] > 0 else 0
         self.loss_gen_cycrecon_x_b = self.criterion(x_bab, x_b) if hyperparameters['recon_x_cyc_w'] > 0 else 0
 
@@ -231,6 +235,8 @@ class MUNIT_Trainer(nn.Module):
                               hyperparameters['recon_kl_w'] * self.loss_gen_kl_ba + \
                               hyperparameters['recon_s_w'] * self.loss_gen_recon_s_a + \
                               hyperparameters['recon_s_w'] * self.loss_gen_recon_s_b + \
+                              hyperparameters['recon_cx_w'] * self.loss_gen_cx_a + \
+                              hyperparameters['recon_cx_w'] * self.loss_gen_cx_b + \
                               hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_x_a + \
                               hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_x_b + \
                               hyperparameters['vgg_w'] * self.loss_gen_vgg_a + \
@@ -335,10 +341,10 @@ class MUNIT_Trainer(nn.Module):
         pair_b_ffake = torch.cat((x_ab.detach(), x_b), 1)
 
         # D loss
-        #self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), x_a)
-        #self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), x_b)
-        self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), self.dis_sa.pool('fetch'))
-        self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), self.dis_sb.pool('fetch'))
+        self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), x_a)
+        self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), x_b)
+        #self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), self.dis_sa.pool('fetch'))
+        #self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), self.dis_sb.pool('fetch'))
         #self.loss_dis_sxa = (self.dis_sa.calc_dis_loss(pair_a_rfake, pair_a_rreal) + self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)) / 2
         #self.loss_dis_sxb = (self.dis_sb.calc_dis_loss(pair_b_rfake, pair_b_rreal) + self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)) / 2
         self.loss_dis_sxa = self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)
