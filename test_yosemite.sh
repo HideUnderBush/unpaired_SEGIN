@@ -1,0 +1,1 @@
+python3 test.py --config configs/summer2winter_yosemite_folder_new.yaml --input '/home/chloe/datasets/summer2winter_yosemite/testB/2009-03-31 19:29:30.jpg' --output_folder outputs --checkpoint outputs/summer2winter_yosemite_folder_new/checkpoints/gen_00005000.pt --a2b 0 --style '/home/chloe/datasets/summer2winter_yosemite/testA/2015-07-06 20:20:50.jpg' 
