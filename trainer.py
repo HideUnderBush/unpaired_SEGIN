@@ -6,6 +6,7 @@ from networks import AdaINGen, MsImageDis
 from utils import weights_init, get_model_list, vgg_preprocess, load_vgg16, get_scheduler, Timer
 from torch.autograd import Variable
 from torchvision import transforms
+from ContextualLoss import ContextualLoss 
 import numpy as np
 import torch.nn.functional as F
 import torch
@@ -61,6 +62,7 @@ class MUNIT_Trainer(nn.Module):
         self.criterion = nn.L1Loss().cuda()
         self.triplet_loss = nn.TripletMarginLoss(margin=1.0, p=2).cuda()
         self.kld = nn.KLDivLoss()
+        self.contextual_loss = ContextualLoss()
 
         # Load VGG model if needed
         if 'vgg_w' in hyperparameters.keys() and hyperparameters['vgg_w'] > 0:
@@ -206,6 +208,8 @@ class MUNIT_Trainer(nn.Module):
         self.loss_gen_recon_c_b = self.recon_criterion(c_b_recon, c_b)
         self.loss_gen_kl_ab = self.kl_loss(x_ab, x_b)
         self.loss_gen_kl_ba = self.kl_loss(x_ba, x_a)
+        self.loss_gen_cx_a = self.contextual_loss(s_ba, s_a_prime)
+        self.loss_gen_cx_b = self.contextual_loss(s_ab, s_b_prime)
         self.loss_gen_cycrecon_x_a = self.criterion(x_aba, x_a) if hyperparameters['recon_x_cyc_w'] > 0 else 0
         self.loss_gen_cycrecon_x_b = self.criterion(x_bab, x_b) if hyperparameters['recon_x_cyc_w'] > 0 else 0
 
