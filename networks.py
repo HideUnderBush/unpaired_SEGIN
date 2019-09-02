@@ -6,6 +6,7 @@ from torch import nn
 from torch.autograd import Variable
 import torch
 import torch.nn.functional as F
+import torch.nn.utils.spectral_norm as spectral_norm
 import re
 try:
     from itertools import izip as zip
@@ -125,7 +126,8 @@ class AdaINGen(nn.Module):
 
         # decoder input has channel number = channel of encoded results * 2
         #self.dec = Decoder(n_downsample, n_res, self.enc_style.output_dim*2, input_dim, res_norm='spade', activ=activ, pad_type=pad_type)
-        self.dec = Decoder(n_downsample, n_res, self.enc_style.output_dim*2, input_dim, res_norm='ln', activ=activ, pad_type=pad_type)
+        #self.dec = Decoder(n_downsample, n_res, self.enc_style.output_dim*2, input_dim, res_norm='ln', activ=activ, pad_type=pad_type)
+        self.dec = Decoder_spade(n_downsample, n_res, self.enc_style.output_dim*2, input_dim, res_norm='spade', activ=activ, pad_type=pad_type)
 
         # MLP to generate AdaIN parameters
         #self.mlp = MLP(style_dim, self.get_num_adain_params(self.dec), mlp_dim, 3, norm='none', activ=activ)
@@ -144,8 +146,9 @@ class AdaINGen(nn.Module):
 
     def decode(self, content, style):
         # decode content and style codes to an image
-        latent_code = torch.cat((content, style),1)
-        images = self.dec(latent_code)
+        #latent_code = torch.cat((content, style),1)
+        #images = self.dec(latent_code)
+        images = self.dec(content, style)
         return images
 
     def content_init(self, path='./data/vgg19_conv.pth'):
@@ -335,6 +338,44 @@ class Decoder(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+class Decoder_spade(nn.Module):
+    def __init__(self, n_upsample, n_res, dim, output_dim, res_norm='adain', activ='relu', pad_type='zero'):
+        super(Decoder_spade, self).__init__()
+        nf = 16 
+        self.fc = nn.Conv2d(256, 8 * nf, 1, padding=0)
+
+        self.head0 = SPADEResnetBlock(8 * nf, 8 * nf, 8 * nf)
+        self.G_middle0 = SPADEResnetBlock(8 * nf, 8 * nf, 8 * nf)
+        self.G_middle1 = SPADEResnetBlock(8 * nf, 8 * nf, 8 * nf)
+        self.up0 = SPADEResnetBlock(8 * nf, 4 * nf, 8 * nf)
+        self.up1 = SPADEResnetBlock(4 * nf, 4 * nf, 8 * nf)
+        self.up2 = SPADEResnetBlock(4 * nf, 2 * nf, 8 * nf)
+        self.up3 = SPADEResnetBlock(2 * nf, 1 * nf, 8 * nf)
+
+        final_nc = nf
+
+        self.conv_img = nn.Conv2d(final_nc, 3, 3, padding =1)
+        self.up = nn.Upsample(scale_factor=2)
+
+    def forward(self, x, style):
+        x = self.fc(x)
+        style = self.fc(style)
+        x = self.head0(x, style)
+        x = self.G_middle0(x, style)
+        #x = self.G_middle1(x, style)
+
+        x = self.up0(x, style)
+        x = self.up(x) # 128 
+        #x = self.up1(x, style)
+        x = self.up2(x, style)
+        x = self.up(x) # 256
+        x = self.up3(x, style)
+
+        x = self.conv_img(F.leaky_relu(x, 2e-1))
+        x = torch.tanh(x)
+
+        return x
+
 ##################################################################################
 # Sequential Models
 ##################################################################################
@@ -367,6 +408,57 @@ class MLP(nn.Module):
 ##################################################################################
 # Basic Blocks
 ##################################################################################
+class SPADEResnetBlock(nn.Module):
+    def __init__(self, fin, fout, nfc):
+        super().__init__()
+        # Attributes
+        self.learned_shortcut = (fin != fout)
+        fmiddle = min(fin, fout)
+
+        # create conv layers
+        self.conv_0 = nn.Conv2d(fin, fmiddle, kernel_size=3, padding=1)
+        self.conv_1 = nn.Conv2d(fmiddle, fout, kernel_size=3, padding=1)
+        if self.learned_shortcut:
+            self.conv_s = nn.Conv2d(fin, fout, kernel_size=1, bias=False)
+
+        # apply spectral norm if specified
+        ''''
+        if 'spectral' in opt.norm_G:
+            self.conv_0 = spectral_norm(self.conv_0)
+            self.conv_1 = spectral_norm(self.conv_1)
+            if self.learned_shortcut:
+                self.conv_s = spectral_norm(self.conv_s)
+        '''
+
+        # define normalization layers
+        spade_config_str = 'instance' 
+        self.norm_0 = SPADE(spade_config_str, fin, nfc)
+        self.norm_1 = SPADE(spade_config_str, fmiddle, nfc)
+        if self.learned_shortcut:
+            self.norm_s = SPADE(spade_config_str, fin, nfc)
+
+    # note the resnet block with SPADE also takes in |seg|,
+    # the semantic segmentation map as input
+    def forward(self, x, seg):
+        x_s = self.shortcut(x, seg)
+
+        dx = self.conv_0(self.actvn(self.norm_0(x, seg)))
+        dx = self.conv_1(self.actvn(self.norm_1(dx, seg)))
+
+        out = x_s + dx
+
+        return out
+
+    def actvn(self, x):
+        return F.leaky_relu(x, 2e-1)
+
+    def shortcut(self, x, seg):
+        if self.learned_shortcut:
+            x_s = self.conv_s(self.norm_s(x, seg))
+        else:
+            x_s = x
+        return x_s
+ 
 class ResBlock(nn.Module):
     def __init__(self, dim, norm='in', activation='relu', pad_type='zero'):
         super(ResBlock, self).__init__()
@@ -673,7 +765,7 @@ class SpectralNorm(nn.Module):
         return self.module.forward(*args)
 
 class SPADE(nn.Module):
-    def __init__(self, config_text, norm_nc=256, label_nc=256):
+    def __init__(self, config_text, norm_nc=128, label_nc=128):
         super().__init__()
 
         #assert config_text.startswith('spade')
@@ -693,38 +785,29 @@ class SPADE(nn.Module):
                              % param_free_norm_type)
 
         # The dimension of the intermediate embedding space. Yes, hardcoded.
-        self.nhidden = 256 
+        self.nhidden = 128 
 
         ks = 3
         pw = ks // 2
         self.mlp_shared = nn.Sequential(
-            nn.Conv2d(label_nc//2, self.nhidden, kernel_size=ks, padding=pw),
+            nn.Conv2d(label_nc, self.nhidden, kernel_size=ks, padding=pw),
             nn.ReLU()
         )
-        self.mlp_gamma = nn.Conv2d(self.nhidden, norm_nc//2, kernel_size=ks, padding=pw)
-        self.mlp_beta = nn.Conv2d(self.nhidden, norm_nc//2, kernel_size=ks, padding=pw)
+        self.mlp_gamma = nn.Conv2d(self.nhidden, norm_nc, kernel_size=ks, padding=pw)
+        self.mlp_beta = nn.Conv2d(self.nhidden, norm_nc, kernel_size=ks, padding=pw)
 
-    def forward(self, input_):
+    def forward(self, x, segmap):
 
-        features_nc = input_.shape[1] // 2
-        x = input_[:,0:features_nc,:,:]
-        #print(x.shape)
-        segmap = input_[:,features_nc:,:,:]
-        #print(segmap.shape)
         # Part 1. generate parameter-free normalized activations
-        normalized = self.param_free_norm(input_)
+        normalized = self.param_free_norm(x)
 
         # Part 2. produce scaling and bias conditioned on semantic map
-        #segmap = F.interpolate(segmap, size=x.size()[2:], mode='nearest')
-        #actv = self.mlp_shared(segmap)
-        #gamma = self.mlp_gamma(actv)
-        #beta = self.mlp_beta(actv)
-        gamma = self.mlp_gamma(segmap)
-        beta = self.mlp_beta(segmap)
+        segmap = F.interpolate(segmap, size=x.size()[2:], mode='nearest')
+        actv = self.mlp_shared(segmap)
+        gamma = self.mlp_gamma(actv)
+        beta = self.mlp_beta(actv)
 
         # apply scale and bias
-        out_x = normalized[:,0:features_nc,:,:] * (1 + gamma) + beta
-        out_segmap = normalized[:,features_nc:,:,:] 
-        out = torch.cat((out_x, out_segmap), dim=1)
+        out = normalized * (1 + gamma) + beta
 
         return out
