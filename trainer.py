@@ -59,6 +59,8 @@ class MUNIT_Trainer(nn.Module):
             self.gen_a.content_init()
             self.gen_b.content_init()
         self.criterion = nn.L1Loss().cuda()
+        self.triplet_loss = nn.TripletMarginLoss(margin=1.0, p=2).cuda()
+        self.kld = nn.KLDivLoss()
 
         # Load VGG model if needed
         if 'vgg_w' in hyperparameters.keys() and hyperparameters['vgg_w'] > 0:
@@ -69,6 +71,9 @@ class MUNIT_Trainer(nn.Module):
 
     def recon_criterion(self, input, target):
         return torch.mean(torch.abs(input - target))
+
+    def kl_loss(self, input, target):
+        return torch.mean(-self.kld(input, target)) 
 
     def normalize_feat(self, feat):
         bs, c, H, W = feat.shape
@@ -122,8 +127,8 @@ class MUNIT_Trainer(nn.Module):
 
         # calculate similarity
         f = torch.matmul(cur_content, ref_content) # 1 x (H x W) x (H x W)
-        f_corr = F.softmax(f/0.005, dim=-1) # 1 x (H x W) x (H x W)
-        #f_corr = F.softmax(f, dim=-1) # 1 x (H x W) x (H x W)
+        #f_corr = F.softmax(f/0.005, dim=-1) # 1 x (H x W) x (H x W)
+        f_corr = F.softmax(f, dim=-1) # 1 x (H x W) x (H x W)
 
         # get corr index replace softmax 
         bs, HW, WH = f_corr.shape
@@ -195,8 +200,12 @@ class MUNIT_Trainer(nn.Module):
         self.loss_gen_recon_s_b = self.recon_criterion(s_bab, s_b_prime) # default is s_bab, need to test s_b_recon
         #self.loss_gen_recon_s_b = self.recon_criterion(s_ab, s_b_prime)
         #self.loss_gen_recon_s_a = self.recon_criterion(s_ba, s_a_prime)
+        self.loss_gen_recon_s_a += self.triplet_loss(s_a_prime, s_aba, s_b_prime)
+        self.loss_gen_recon_s_b += self.triplet_loss(s_b_prime, s_bab, s_a_prime)
         self.loss_gen_recon_c_a = self.recon_criterion(c_a_recon, c_a)
         self.loss_gen_recon_c_b = self.recon_criterion(c_b_recon, c_b)
+        self.loss_gen_kl_ab = self.kl_loss(x_ab, x_b)
+        self.loss_gen_kl_ba = self.kl_loss(x_ba, x_a)
         self.loss_gen_cycrecon_x_a = self.criterion(x_aba, x_a) if hyperparameters['recon_x_cyc_w'] > 0 else 0
         self.loss_gen_cycrecon_x_b = self.criterion(x_bab, x_b) if hyperparameters['recon_x_cyc_w'] > 0 else 0
 
@@ -207,8 +216,8 @@ class MUNIT_Trainer(nn.Module):
         self.loss_gen_adv_sxb = self.gen_b.calc_gen_loss(self.dis_sb.forward(pair_b_ffake))
 
         # domain-invariant perceptual loss
-        self.loss_gen_vgg_a = self.compute_vgg_loss(self.vgg, x_ba, x_b) if hyperparameters['vgg_w'] > 0 else 0
-        self.loss_gen_vgg_b = self.compute_vgg_loss(self.vgg, x_ab, x_a) if hyperparameters['vgg_w'] > 0 else 0
+        self.loss_gen_vgg_a = self.compute_vgg_loss_new(self.vgg, x_ba, x_b) if hyperparameters['vgg_w'] > 0 else 0
+        self.loss_gen_vgg_b = self.compute_vgg_loss_new(self.vgg, x_ab, x_a) if hyperparameters['vgg_w'] > 0 else 0
         # total loss
         self.loss_gen_total = hyperparameters['gan_w'] * self.loss_gen_adv_xa + \
                               hyperparameters['gan_w'] * self.loss_gen_adv_xb + \
@@ -218,6 +227,8 @@ class MUNIT_Trainer(nn.Module):
                               hyperparameters['recon_x_w'] * self.loss_gen_recon_x_b + \
                               hyperparameters['recon_c_w'] * self.loss_gen_recon_c_a + \
                               hyperparameters['recon_c_w'] * self.loss_gen_recon_c_b + \
+                              hyperparameters['recon_kl_w'] * self.loss_gen_kl_ab + \
+                              hyperparameters['recon_kl_w'] * self.loss_gen_kl_ba + \
                               hyperparameters['recon_s_w'] * self.loss_gen_recon_s_a + \
                               hyperparameters['recon_s_w'] * self.loss_gen_recon_s_b + \
                               hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_x_a + \
