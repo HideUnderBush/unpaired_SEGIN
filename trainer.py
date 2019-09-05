@@ -75,7 +75,8 @@ class MUNIT_Trainer(nn.Module):
         return torch.mean(torch.abs(input - target))
 
     def kl_loss(self, input, target):
-        return torch.mean(-self.kld(input, target)) 
+        #return torch.mean(torch.abs(self.kld(input, target)))
+        return torch.mean(self.kld(input, target))
 
     def normalize_feat(self, feat):
         bs, c, H, W = feat.shape
@@ -129,8 +130,8 @@ class MUNIT_Trainer(nn.Module):
 
         # calculate similarity
         f = torch.matmul(cur_content, ref_content) # 1 x (H x W) x (H x W)
-        #f_corr = F.softmax(f/0.005, dim=-1) # 1 x (H x W) x (H x W)
-        f_corr = F.softmax(f, dim=-1) # 1 x (H x W) x (H x W)
+        f_corr = F.softmax(f/0.005, dim=-1) # 1 x (H x W) x (H x W)
+        #f_corr = F.softmax(f, dim=-1) # 1 x (H x W) x (H x W)
 
         # get corr index replace softmax 
         bs, HW, WH = f_corr.shape
@@ -158,8 +159,8 @@ class MUNIT_Trainer(nn.Module):
         _, s_ab_warp = warp_style(c_a, c_b, s_b_fake)
         _, s_ba_warp = warp_style(c_b, c_a, s_a_fake)
 
-        x_ba = self.gen_a.decode(c_b, s_ba_warp)
-        x_ab = self.gen_b.decode(c_a, s_ab_warp)
+        x_ba = self.gen_a.decode(s_ba_warp, c_b)
+        x_ab = self.gen_b.decode(s_ab_warp, c_a)
         self.train()
         return x_ab, x_ba
 
@@ -174,40 +175,38 @@ class MUNIT_Trainer(nn.Module):
         _, s_ba = self.warp_style(c_b, c_a, s_a_prime)
 
         # decode (within domain)
-        x_a_recon = self.gen_a.decode(c_a, s_a_prime)
-        x_b_recon = self.gen_b.decode(c_b, s_b_prime)
+        x_a_recon = self.gen_a.decode(s_a_prime, c_a)
+        x_b_recon = self.gen_b.decode(s_b_prime, c_b)
         # decode (cross domain)
-        x_ba = self.gen_a.decode(c_b, s_ba)
-        x_ab = self.gen_b.decode(c_a, s_ab)
+        x_ba = self.gen_a.decode(s_ba, c_b)
+        x_ab = self.gen_b.decode(s_ab, c_a)
         # encode again
-        c_b_recon, s_a_recon = self.gen_a.encode(x_ba) # now the s_a_recon matches the structure of B
-        c_a_recon, s_b_recon = self.gen_b.encode(x_ab)
+        c_b_recon, s_ba_recon = self.gen_a.encode(x_ba) # now the s_a_recon matches the structure of B
+        c_a_recon, s_ab_recon = self.gen_b.encode(x_ab)
 
         # decode again (if needed)
         # to warp style first
-        _, s_aba = self.warp_style(c_b, c_a, s_a_recon)
-        _, s_bab = self.warp_style(c_a, c_b, s_b_recon)
+        _, s_aba = self.warp_style(c_a, c_b, s_ba_recon)
+        _, s_bab = self.warp_style(c_b, c_a, s_ab_recon)
         # to reconstruct then
-        x_aba = self.gen_a.decode(c_a_recon, s_a_prime) if hyperparameters['recon_x_cyc_w'] > 0 else None
-        x_bab = self.gen_b.decode(c_b_recon, s_b_prime) if hyperparameters['recon_x_cyc_w'] > 0 else None
+        x_aba = self.gen_a.decode(s_a_prime, c_a_recon) if hyperparameters['recon_x_cyc_w'] > 0 else None
+        x_bab = self.gen_b.decode(s_b_prime, c_b_recon) if hyperparameters['recon_x_cyc_w'] > 0 else None
 
         # prepare paired data for adv generator
-        pair_a_ffake = torch.cat((x_ba, x_a), 1)
-        pair_b_ffake = torch.cat((x_ab, x_b), 1)
+        #pair_a_ffake = torch.cat((x_ba, x_a), 1)
+        #pair_b_ffake = torch.cat((x_ab, x_b), 1)
 
         # reconstruction loss
-        self.loss_gen_recon_x_a = self.criterion(x_a_recon, x_a)
-        self.loss_gen_recon_x_b = self.criterion(x_b_recon, x_b)
+        self.loss_gen_recon_x_a = self.recon_criterion(x_a_recon, x_a)
+        self.loss_gen_recon_x_b = self.recon_criterion(x_b_recon, x_b)
         self.loss_gen_recon_s_a = self.recon_criterion(s_aba, s_a_prime)
         self.loss_gen_recon_s_b = self.recon_criterion(s_bab, s_b_prime) # default is s_bab, need to test s_b_recon
-        #self.loss_gen_recon_s_b = self.recon_criterion(s_ab, s_b_prime)
-        #self.loss_gen_recon_s_a = self.recon_criterion(s_ba, s_a_prime)
-        self.loss_gen_recon_s_a += self.triplet_loss(s_a_prime, s_aba, s_b_prime)
-        self.loss_gen_recon_s_b += self.triplet_loss(s_b_prime, s_bab, s_a_prime)
+        #self.loss_gen_recon_s_a += self.triplet_loss(s_a_prime, s_aba, s_b_prime)
+        #self.loss_gen_recon_s_b += self.triplet_loss(s_b_prime, s_bab, s_a_prime)
         self.loss_gen_recon_c_a = self.recon_criterion(c_a_recon, c_a)
         self.loss_gen_recon_c_b = self.recon_criterion(c_b_recon, c_b)
-        self.loss_gen_kl_ab = self.kl_loss(x_ab, x_b)
-        self.loss_gen_kl_ba = self.kl_loss(x_ba, x_a)
+        #self.loss_gen_kl_ab = self.kl_loss(x_ab, x_b)
+        #self.loss_gen_kl_ba = self.kl_loss(x_ba, x_a)
         self.loss_gen_cx_a = self.contextual_loss(s_ba, s_a_prime)
         self.loss_gen_cx_b = self.contextual_loss(s_ab, s_b_prime)
         self.loss_gen_cycrecon_x_a = self.criterion(x_aba, x_a) if hyperparameters['recon_x_cyc_w'] > 0 else 0
@@ -216,8 +215,8 @@ class MUNIT_Trainer(nn.Module):
         # GAN loss
         self.loss_gen_adv_xa = self.gen_a.calc_gen_loss(self.dis_a.forward(x_ba))
         self.loss_gen_adv_xb = self.gen_b.calc_gen_loss(self.dis_b.forward(x_ab))
-        self.loss_gen_adv_sxa = self.gen_a.calc_gen_loss(self.dis_sa.forward(pair_a_ffake))
-        self.loss_gen_adv_sxb = self.gen_b.calc_gen_loss(self.dis_sb.forward(pair_b_ffake))
+        #self.loss_gen_adv_sxa = self.gen_a.calc_gen_loss(self.dis_sa.forward(pair_a_ffake))
+        #self.loss_gen_adv_sxb = self.gen_b.calc_gen_loss(self.dis_sb.forward(pair_b_ffake))
 
         # domain-invariant perceptual loss
         self.loss_gen_vgg_a = self.compute_vgg_loss_new(self.vgg, x_ba, x_b) if hyperparameters['vgg_w'] > 0 else 0
@@ -225,22 +224,24 @@ class MUNIT_Trainer(nn.Module):
         # total loss
         self.loss_gen_total = hyperparameters['gan_w'] * self.loss_gen_adv_xa + \
                               hyperparameters['gan_w'] * self.loss_gen_adv_xb + \
-                              hyperparameters['gan_wp'] * self.loss_gen_adv_sxa + \
-                              hyperparameters['gan_wp'] * self.loss_gen_adv_sxb + \
                               hyperparameters['recon_x_w'] * self.loss_gen_recon_x_a + \
                               hyperparameters['recon_x_w'] * self.loss_gen_recon_x_b + \
                               hyperparameters['recon_c_w'] * self.loss_gen_recon_c_a + \
                               hyperparameters['recon_c_w'] * self.loss_gen_recon_c_b + \
-                              hyperparameters['recon_kl_w'] * self.loss_gen_kl_ab + \
-                              hyperparameters['recon_kl_w'] * self.loss_gen_kl_ba + \
                               hyperparameters['recon_s_w'] * self.loss_gen_recon_s_a + \
                               hyperparameters['recon_s_w'] * self.loss_gen_recon_s_b + \
                               hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_x_a + \
                               hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_x_b + \
                               hyperparameters['vgg_w'] * self.loss_gen_vgg_a + \
                               hyperparameters['vgg_w'] * self.loss_gen_vgg_b
+                              #hyperparameters['recon_kl_w'] * self.loss_gen_kl_ab + \
+                              #hyperparameters['recon_kl_w'] * self.loss_gen_kl_ba + \
+                              #hyperparameters['recon_cx_w'] * self.loss_gen_cx_a + \
+                              #hyperparameters['recon_cx_w'] * self.loss_gen_cx_b + \
                               #hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_s_a + \
                               #hyperparameters['recon_x_cyc_w'] * self.loss_gen_cycrecon_s_b + \
+                              #hyperparameters['gan_wp'] * self.loss_gen_adv_sxa + \
+                              #hyperparameters['gan_wp'] * self.loss_gen_adv_sxb + \
         self.loss_gen_total.backward()
         
         self.gen_opt.step()
@@ -266,27 +267,26 @@ class MUNIT_Trainer(nn.Module):
         #s_a2 = Variable(torch.randn(x_a.size(0), self.style_dim, 1, 1).cuda())
         #s_b2 = Variable(torch.randn(x_b.size(0), self.style_dim, 1, 1).cuda())
         x_a_recon, x_b_recon, x_ba1, x_ba2, x_ab1, x_ab2 = [], [], [], [], [], []
-        h = 64
-        w = 64
+        h = w = 64 
         for i in range(x_a.size(0)):
             img_a = x_a[i].unsqueeze(0)
             img_b = x_b[i].unsqueeze(0)
             c_a, s_a_fake = self.gen_a.encode(img_a)
             c_b, s_b_fake = self.gen_b.encode(img_b)
             # reconstruction
-            x_a_recon.append(self.gen_a.decode(c_a, s_a_fake))
-            x_b_recon.append(self.gen_b.decode(c_b, s_b_fake))
+            x_a_recon.append(self.gen_a.decode(s_a_fake, c_a))
+            x_b_recon.append(self.gen_b.decode(s_b_fake, c_b))
             print(x_a_recon[0].shape)
             # warp style
             corr_index_ab, s_ab = self.warp_style(c_a, c_b, s_b_fake)
             corr_index_ba, s_ba = self.warp_style(c_b, c_a, s_a_fake)
             # cross domain construction
-            x_ba1.append(self.gen_a.decode(c_b, s_ba))
+            x_ba1.append(self.gen_a.decode(s_ba, c_b))
             ## output warped results x_ba2
             corr_map_ba = self.generate_map(corr_index_ba, h, w)
             x_ba2.append(self.warp_img(corr_map_ba, img_a))
 
-            x_ab1.append(self.gen_b.decode(c_a, s_ab))
+            x_ab1.append(self.gen_b.decode(s_ab, c_a))
             ## output warped results x_ab2
             corr_map_ab = self.generate_map(corr_index_ab, h, w)
             x_ab2.append(self.warp_img(corr_map_ab, img_b))
@@ -312,8 +312,8 @@ class MUNIT_Trainer(nn.Module):
         _, s_ba_warp = self.warp_style(c_b, c_a, s_a)
 
         # decode (cross domain)
-        x_ba = self.gen_a.decode(c_b, s_ba_warp)
-        x_ab = self.gen_b.decode(c_a, s_ab_warp)
+        x_ba = self.gen_a.decode(s_ba_warp, c_b)
+        x_ab = self.gen_b.decode(s_ab_warp, c_a)
 
         # prepare data for the paired discriminator
         # real fake data -> 0
@@ -335,20 +335,21 @@ class MUNIT_Trainer(nn.Module):
         pair_a_rreal = torch.cat((x_a, x_adf), 1)
         pair_b_rreal = torch.cat((x_b, x_bdf), 1)
         # fake fake data -> 0
-        pair_a_ffake = torch.cat((x_ba.detach(), x_a), 1)
-        pair_b_ffake = torch.cat((x_ab.detach(), x_b), 1)
+        #pair_a_ffake = torch.cat((x_ba.detach(), x_a), 1)
+        #pair_b_ffake = torch.cat((x_ab.detach(), x_b), 1)
 
         # D loss
-        #self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), x_a)
-        #self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), x_b)
-        self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), self.dis_sa.pool('fetch'))
-        self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), self.dis_sb.pool('fetch'))
+        self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), x_a)
+        self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), x_b)
+        #self.loss_dis_xa = self.dis_a.calc_dis_loss(x_ba.detach(), self.dis_sa.pool('fetch'))
+        #self.loss_dis_xb = self.dis_b.calc_dis_loss(x_ab.detach(), self.dis_sb.pool('fetch'))
         #self.loss_dis_sxa = (self.dis_sa.calc_dis_loss(pair_a_rfake, pair_a_rreal) + self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)) / 2
         #self.loss_dis_sxb = (self.dis_sb.calc_dis_loss(pair_b_rfake, pair_b_rreal) + self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)) / 2
-        self.loss_dis_sxa = self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)
-        self.loss_dis_sxb = self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)
+        #self.loss_dis_sxa = self.dis_sa.calc_dis_loss(pair_a_ffake, pair_a_rreal)
+        #self.loss_dis_sxb = self.dis_sb.calc_dis_loss(pair_b_ffake, pair_b_rreal)
 
-        self.loss_dis_total = hyperparameters['gan_w'] * self.loss_dis_xa + hyperparameters['gan_w'] * self.loss_dis_xb + hyperparameters['gan_wp'] * self.loss_dis_sxa + hyperparameters['gan_wp'] * self.loss_dis_sxb
+        #self.loss_dis_total = hyperparameters['gan_w'] * self.loss_dis_xa + hyperparameters['gan_w'] * self.loss_dis_xb + hyperparameters['gan_wp'] * self.loss_dis_sxa + hyperparameters['gan_wp'] * self.loss_dis_sxb
+        self.loss_dis_total = hyperparameters['gan_w'] * self.loss_dis_xa + hyperparameters['gan_w'] * self.loss_dis_xb 
         self.loss_dis_total.backward()
         self.dis_opt.step()
         self.dis_style_opt.step()
