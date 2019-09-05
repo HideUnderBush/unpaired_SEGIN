@@ -4,6 +4,7 @@ Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses
 """
 from torch import nn
 from torch.autograd import Variable
+from models.sync_batchnorm.batchnorm import SynchronizedBatchNorm2d
 import torch
 import torch.nn.functional as F
 import torch.nn.utils.spectral_norm as spectral_norm
@@ -116,11 +117,11 @@ class AdaINGen(nn.Module):
         self.gan_type = params['gan_type']
 
         # style encoder
-        self.enc_style = Encoder(n_downsample, n_res, input_dim, dim, 'bn', activ, pad_type=pad_type)
+        self.enc_style = Encoder(n_downsample, n_res, input_dim, dim, 'ln', activ, pad_type=pad_type)
 
         # content encoder
         if content_encoder_method != 'vgg':
-            self.enc_content = Encoder(n_downsample, n_res, input_dim, dim, 'bn', activ, pad_type=pad_type)
+            self.enc_content = Encoder(n_downsample, n_res, input_dim, dim, 'ln', activ, pad_type=pad_type)
         else:
             self.enc_content = ContentEncoder()
 
@@ -342,7 +343,7 @@ class Decoder_spade(nn.Module):
     def __init__(self, n_upsample, n_res, dim, output_dim, res_norm='adain', activ='relu', pad_type='zero'):
         super(Decoder_spade, self).__init__()
         nf = 16 
-        self.fc = nn.Conv2d(256, 8 * nf, 1, padding=0)
+        self.fc = nn.Conv2d(256, 8 * nf, 3, padding=1)
 
         self.head0 = SPADEResnetBlock(8 * nf, 8 * nf, 8 * nf)
         self.G_middle0 = SPADEResnetBlock(8 * nf, 8 * nf, 8 * nf)
@@ -365,14 +366,15 @@ class Decoder_spade(nn.Module):
         #x = self.G_middle1(x, style)
 
         x = self.up0(x, style)
-        x = self.up(x) # 128 
+        x = self.up(x) # 64 
         #x = self.up1(x, style)
+        #x = self.up(x) # 128 
         x = self.up2(x, style)
         x = self.up(x) # 256
         x = self.up3(x, style)
 
         x = self.conv_img(F.leaky_relu(x, 2e-1))
-        x = torch.tanh(x)
+        x = F.tanh(x)
 
         return x
 
@@ -422,16 +424,15 @@ class SPADEResnetBlock(nn.Module):
             self.conv_s = nn.Conv2d(fin, fout, kernel_size=1, bias=False)
 
         # apply spectral norm if specified
-        ''''
-        if 'spectral' in opt.norm_G:
+        #if 'spectral' in opt.norm_G:
+        if True:
             self.conv_0 = spectral_norm(self.conv_0)
             self.conv_1 = spectral_norm(self.conv_1)
             if self.learned_shortcut:
                 self.conv_s = spectral_norm(self.conv_s)
-        '''
 
         # define normalization layers
-        spade_config_str = 'instance' 
+        spade_config_str = 'syncbatch' 
         self.norm_0 = SPADE(spade_config_str, fin, nfc)
         self.norm_1 = SPADE(spade_config_str, fmiddle, nfc)
         if self.learned_shortcut:
